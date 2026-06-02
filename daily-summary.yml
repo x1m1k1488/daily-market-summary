@@ -1,0 +1,36 @@
+name: Daily market summary to Telegram
+
+on:
+  schedule:
+    # GitHub Actions работает по UTC.
+    # 08:00 по Киеву = 05:00 UTC (лето, UTC+3) или 06:00 UTC (зима, UTC+2).
+    # Запускаем в оба часа; сам скрипт отправит только когда в Киеве 08:00.
+    - cron: "0 5 * * *"
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Отправить сейчас, игнорируя проверку времени (для теста)"
+        type: boolean
+        default: true
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run summary
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # При ручном запуске с force=true пропускаем проверку часа
+          ENFORCE_SEND_HOUR: ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '0' || '1' }}
+        run: python send_summary.py
