@@ -11,15 +11,16 @@
   - форекс EUR/USD (Frankfurter / ECB)
   - события дня, способные двинуть рынок (бесплатный календарь ForexFactory)
 
-Формирует "среднюю" сводку и отправляет в Telegram-группу.
+Формирует "среднюю" сводку с живым анализом и отправляет в Telegram-группу.
 
-Если задан ANTHROPIC_API_KEY — текст сводки пишет Claude (более живой анализ).
-Если нет — используется встроенный форматтер (полностью бесплатно, без ключей).
+Встроенный форматтер работает полностью бесплатно, без внешних ключей.
+Если задан ANTHROPIC_API_KEY — текст сводки пишет Claude (необязательно, платно).
 
 Переменные окружения (секреты GitHub Actions):
   TELEGRAM_BOT_TOKEN   (обязательно)
   TELEGRAM_CHAT_ID     (обязательно, для групп — отрицательное число)
-  ANTHROPIC_API_KEY    (опционально)
+  ANTHROPIC_API_KEY    (опционально, платно)
+  CLAUDE_MODEL         (опционально, по умолчанию claude-sonnet-4-6)
 """
 
 import os
@@ -51,7 +52,6 @@ WMO = {
     96: "гроза с градом", 99: "сильная гроза с градом",
 }
 
-# Какие активы держим в фокусе (флаг страны валюты события -> emoji)
 FLAGS = {"USD": "🇺🇸", "EUR": "🇪🇺", "GBP": "🇬🇧", "JPY": "🇯🇵",
          "CNY": "🇨🇳", "CHF": "🇨🇭", "CAD": "🇨🇦", "AUD": "🇦🇺",
          "NZD": "🇳🇿", "UAH": "🇺🇦", "ALL": "🌐"}
@@ -140,7 +140,7 @@ def fetch_crypto():
                     ps = f"${p:,.0f}".replace(",", " ")
                 else:
                     ps = f"${p:,.2f}"
-                out[label] = f"{ps} ({sign}{abs(ch):.1f}%)"
+                out[label] = {"text": f"{ps} ({sign}{abs(ch):.1f}%)", "chg": ch}
         return out
     except Exception as e:
         return {"error": str(e)}
@@ -151,7 +151,6 @@ def fetch_eurusd():
         latest = get_json("https://api.frankfurter.app/latest?from=EUR&to=USD")
         rate = latest["rates"]["USD"]
         date = latest["date"]
-        # предыдущий рабочий день для дельты
         prev_day = (dt.date.fromisoformat(date) - dt.timedelta(days=1)).isoformat()
         delta = ""
         try:
@@ -192,11 +191,56 @@ def fetch_events(limit=8):
                 "forecast": e.get("forecast", ""),
                 "previous": e.get("previous", ""),
             })
-        # high сначала, потом по времени
         events.sort(key=lambda x: (0 if x["impact"] == "high" else 1, x["time"]))
         return events[:limit]
     except Exception as e:
         return [{"error": str(e)}]
+
+
+# ---------- интерпретация (живой анализ, бесплатно) ----------
+
+def _crypto_mood(chg):
+    if chg is None:
+        return ""
+    if chg >= 3:
+        return "уверенный рост"
+    if chg >= 1:
+        return "умеренный плюс"
+    if chg > -1:
+        return "почти без изменений"
+    if chg > -3:
+        return "лёгкое снижение"
+    return "заметная распродажа"
+
+
+EVENT_RULES = [
+    (("cpi", "inflation", "price index", "ppi"),
+     "инфляция — влияет на ожидания по ставкам ЦБ"),
+    (("non-farm", "nonfarm", "payroll", "nfp", "employment", "unemployment",
+      "jobless", "claims"),
+     "рынок труда — сильные данные обычно укрепляют доллар"),
+    (("pmi", "ism"), "деловая активность, опережающий индикатор экономики"),
+    (("gdp",), "темпы роста экономики"),
+    (("interest rate", "rate decision", "rate statement", "fomc", "fed funds",
+      "ecb", "boe", "monetary policy", "rate"),
+     "решение/риторика по ставке — обычно высокая волатильность"),
+    (("retail sales",), "потребительский спрос"),
+    (("trade balance", "current account"), "внешняя торговля"),
+    (("confidence", "sentiment"), "настроения в экономике"),
+    (("speaks", "speech", "testimony", "press conference"),
+     "риторика чиновников — возможны резкие движения"),
+]
+
+
+def _interpret_event(title, impact):
+    t = (title or "").lower()
+    meaning = "макростатистика"
+    for keys, desc in EVENT_RULES:
+        if any(k in t for k in keys):
+            meaning = desc
+            break
+    vol = "сильное движение возможно" if impact == "high" else "локальная реакция"
+    return meaning, vol
 
 
 # ---------- форматирование ----------
@@ -230,14 +274,27 @@ def build_message(data):
     else:
         for label in ("BTC", "ETH", "USDT"):
             if label in cr:
-                L.append(f"• {label} — {cr[label]}")
+                item = cr[label]
+                if isinstance(item, dict):
+                    mood = _crypto_mood(item.get("chg"))
+                    note = f" — {mood}" if mood and label != "USDT" else ""
+                    L.append(f"• {label} — {item['text']}{note}")
+                else:
+                    L.append(f"• {label} — {item}")
     L.append("")
 
-    L.append(f"<b>Форекс:</b> EUR/USD — {data['eurusd']}")
+    eurusd = data["eurusd"]
+    fx_note = ""
+    if "−" in eurusd:
+        fx_note = " — евро слабеет к доллару"
+    elif "+" in eurusd:
+        fx_note = " — евро укрепляется к доллару"
+    L.append(f"<b>Форекс:</b> EUR/USD — {eurusd}{fx_note}")
     L.append("")
 
     ev = data["events"]
     L.append("<b>Главные события дня (могут двинуть рынок):</b>")
+    calendar_ok = not (ev and "error" in ev[0])
     if ev and "error" in ev[0]:
         L.append(f"календарь недоступен ({ev[0]['error']})")
     elif not ev:
@@ -253,8 +310,25 @@ def build_message(data):
                 extra.append(f"пред. {e['previous']}")
             tail = f" — {', '.join(extra)}" if extra else ""
             title = html.escape(e["title"])
+            meaning, vol = _interpret_event(e["title"], e["impact"])
             L.append(f"{star} {e['time']} {flag} {title}{tail}")
+            L.append(f"   ↳ <i>{meaning}; {vol}.</i>")
     L.append("")
+
+    if calendar_ok:
+        highs = sum(1 for e in ev if e.get("impact") == "high")
+        if highs >= 3:
+            verdict = ("ожидается высокая волатильность — день насыщен важными "
+                       "релизами, возможны резкие движения по доллару, евро и крипте.")
+        elif highs >= 1:
+            verdict = ("волатильность умеренная — есть отдельные значимые события, "
+                       "следите за реакцией на их выход.")
+        else:
+            verdict = ("день относительно спокойный по календарю — резких движений "
+                       "на макроданных не ожидается.")
+        L.append(f"<b>Вывод по волатильности:</b> {verdict}")
+        L.append("")
+
     L.append('<b>Источники:</b> '
              '<a href="https://www.investing.com/economic-calendar">Investing.com</a> · '
              '<a href="https://ru.tradingview.com/">TradingView</a> · '
@@ -341,8 +415,8 @@ def send_telegram(text):
 
 
 def main():
-    # Защита от DST: workflow запускается в 05:00 и 06:00 UTC,
-    # отправляем только если в Киеве сейчас 08:xx.
+    # Защита от перехода на зимнее/летнее время: workflow запускается в 05:00 и
+    # 06:00 UTC, отправляем только если в Киеве сейчас 08:xx.
     if os.environ.get("ENFORCE_SEND_HOUR", "1") == "1":
         cur_hour = dt.datetime.now(TZ).hour
         if cur_hour != SEND_HOUR and "--force" not in sys.argv:
