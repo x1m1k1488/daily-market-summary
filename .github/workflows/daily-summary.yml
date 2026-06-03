@@ -31,6 +31,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # При ручном запуске с force=true пропускаем проверку часа
+          # Какой cron запустил задачу (для выбора лето/зима в скрипте)
+          SCHEDULED_CRON: ${{ github.event.schedule }}
+          # При ручном запуске с force=true пропускаем проверку времени
           ENFORCE_SEND_HOUR: ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '0' || '1' }}
         run: python send_summary.py
