@@ -414,14 +414,33 @@ def send_telegram(text):
     return resp
 
 
+def _should_send():
+    """Отправлять ли сейчас. Устойчиво к задержкам GitHub Actions: смотрим не на
+    текущий час (он плавает), а на то, какой cron запустил задачу, и на сезон
+    (лето/зима) Киева. Так получаем ровно одну отправку в день в нужный сезон."""
+    if "--force" in sys.argv:
+        return True
+    if os.environ.get("ENFORCE_SEND_HOUR", "1") != "1":
+        return True
+    cron = (os.environ.get("SCHEDULED_CRON") or "").strip()
+    offset_h = (dt.datetime.now(TZ).utcoffset() or dt.timedelta()).total_seconds() / 3600
+    if cron:
+        # 05:00 UTC = 08:00 Киев летом (UTC+3); 06:00 UTC = 08:00 Киев зимой (UTC+2)
+        if cron.startswith("0 5") and offset_h == 3:
+            return True
+        if cron.startswith("0 6") and offset_h == 2:
+            return True
+        return False
+    # Нет данных о cron (ручной запуск без --force): окно 08:00–09:59 по Киеву
+    return dt.datetime.now(TZ).hour in (SEND_HOUR, SEND_HOUR + 1)
+
+
 def main():
-    # Защита от перехода на зимнее/летнее время: workflow запускается в 05:00 и
-    # 06:00 UTC, отправляем только если в Киеве сейчас 08:xx.
-    if os.environ.get("ENFORCE_SEND_HOUR", "1") == "1":
-        cur_hour = dt.datetime.now(TZ).hour
-        if cur_hour != SEND_HOUR and "--force" not in sys.argv:
-            print(f"[skip] Сейчас {cur_hour}:00 по Киеву, отправка только в {SEND_HOUR}:00.")
-            return
+    if not _should_send():
+        now = dt.datetime.now(TZ)
+        print(f"[skip] Не время отправки (сейчас {now:%H:%M} Киев, "
+              f"cron={os.environ.get('SCHEDULED_CRON', '-')}).")
+        return
 
     data = {
         "weather": fetch_weather(),
