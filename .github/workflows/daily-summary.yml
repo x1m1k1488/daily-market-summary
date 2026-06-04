@@ -2,11 +2,9 @@ name: Daily market summary to Telegram
 
 on:
   schedule:
-    # GitHub Actions работает по UTC.
-    # 08:00 по Киеву = 05:00 UTC (лето, UTC+3) или 06:00 UTC (зима, UTC+2).
-    # Запускаем в оба часа; сам скрипт отправит только когда в Киеве 08:00.
+    # GitHub Actions работает по UTC. 05:00 UTC = 08:00 Киев (лето) / 07:00 (зима).
+    # Один запуск в день; скрипт отправляет безусловно (устойчиво к задержкам GitHub).
     - cron: "0 5 * * *"
-    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
       force:
