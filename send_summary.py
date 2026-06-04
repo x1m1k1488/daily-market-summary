@@ -415,23 +415,19 @@ def send_telegram(text):
 
 
 def _should_send():
-    """Отправлять ли сейчас. Устойчиво к задержкам GitHub Actions: смотрим не на
-    текущий час (он плавает), а на то, какой cron запустил задачу, и на сезон
-    (лето/зима) Киева. Так получаем ровно одну отправку в день в нужный сезон."""
+    """Отправлять ли сейчас.
+
+    Главный принцип — НАДЁЖНОСТЬ доставки. GitHub Actions запускает расписание
+    с непредсказуемой задержкой, поэтому мы НЕ проверяем точное время: любой
+    запуск по расписанию (единственный cron в день) => отправляем. Ручной запуск
+    с --force тоже отправляет. Для запусков «вручную без force» — окно вокруг 08:00."""
     if "--force" in sys.argv:
+        return True
+    # Любой запуск по расписанию -> отправляем (cron один, значит один раз в день)
+    if (os.environ.get("SCHEDULED_CRON") or "").strip():
         return True
     if os.environ.get("ENFORCE_SEND_HOUR", "1") != "1":
         return True
-    cron = (os.environ.get("SCHEDULED_CRON") or "").strip()
-    offset_h = (dt.datetime.now(TZ).utcoffset() or dt.timedelta()).total_seconds() / 3600
-    if cron:
-        # 05:00 UTC = 08:00 Киев летом (UTC+3); 06:00 UTC = 08:00 Киев зимой (UTC+2)
-        if cron.startswith("0 5") and offset_h == 3:
-            return True
-        if cron.startswith("0 6") and offset_h == 2:
-            return True
-        return False
-    # Нет данных о cron (ручной запуск без --force): окно 08:00–09:59 по Киеву
     return dt.datetime.now(TZ).hour in (SEND_HOUR, SEND_HOUR + 1)
 
 
